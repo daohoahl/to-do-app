@@ -21,20 +21,45 @@ jobs:
       with:
         node-version: 18
 
+    - name: Preflight logs (env, versions, folders)
+      shell: bash
+      run: |
+        set -euxo pipefail
+        echo "Runner info"
+        uname -a || true
+        echo "Workspace"
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
     - name: Install dependencies
-      run: 
+      shell: bash
+      run: |
+        set -euxo pipefail
         cd todo
-        npm install
+        npm ci || npm install
+        npm ls --depth=0 || true
 
     - name: Run test
-      run: 
+      shell: bash
+      run: |
+        set -euxo pipefail
         cd todo
         npm test || echo "Skip test"
 
     - name: Build project
-      run: 
+      shell: bash
+      run: |
+        set -euxo pipefail
         cd todo
         npm run build
+        echo "Build output (todo/build)"
+        ls -la build
+        test -f build/index.html
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
