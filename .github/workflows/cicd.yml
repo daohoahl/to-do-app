@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: self-hosted 
+    runs-on: self-hosted
 
     steps:
     - name: Checkout code
@@ -48,7 +48,7 @@ jobs:
 
     steps:
     - name: Deploy local on Mac
-     run: 
+      run: 
         echo "Deploying to local machine..."
         mkdir -p ~/deploy-todo
         cp -r todo/build/* ~/deploy-todo
