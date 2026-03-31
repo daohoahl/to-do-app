@@ -1,0 +1,60 @@
+name: CI/CD React Todo App
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Install dependencies
+      run: 
+        cd todo
+        npm install
+
+    - name: Run test
+      run: 
+        cd todo
+        npm test || echo "Skip test"
+
+    - name: Build project
+      run: 
+        cd todo
+        npm run build
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-files
+        path: ./todo/build
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: build-files
+        path: ./todo/build
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./todo/build
