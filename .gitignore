@@ -1,0 +1,6 @@
+actions-runner/
+.DS_Store
+
+# React app artifacts (repo root shouldn't track these)
+todo/node_modules/
+todo/build/

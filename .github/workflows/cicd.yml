@@ -1,0 +1,137 @@
+name: CI/CD React Todo App
+
+on:
+  push:
+    branches:
+      - develop
+
+jobs:
+  ci-test:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Preflight logs (env)
+      shell: bash
+      run: 
+        set -euxo pipefail
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
+    - name: Install dependencies
+      shell: bash
+      run: 
+        set -euxo pipefail
+        cd todo
+        npm install
+
+    - name: CI test 
+      shell: bash
+      run: 
+        set -euxo pipefail
+        cd todo
+
+  build:
+    needs: ci-test
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Preflight logs (env)
+      shell: bash
+      run: 
+        set -euxo pipefail
+        echo "Workspace"
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
+    - name: Install dependencies
+      shell: bash
+      run:
+        set -euxo pipefail
+        cd todo
+        npm install
+
+    - name: Build project
+      shell: bash
+      run:
+        set -euxo pipefail
+        cd todo
+        npm run build
+        echo "Build output (todo/build)"
+        ls -la build
+        test -f build/index.html
+
+  deploy:
+    needs: build
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Preflight logs (env, versions, folders)
+      shell: bash
+      run:
+        set -euxo pipefail
+        echo "Runner info"
+        uname -a || true
+        echo "Workspace"
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
+    - name: Install dependencies
+      shell: bash
+      run:
+        set -euxo pipefail
+        cd todo
+        npm install
+
+    - name: Build project 
+      shell: bash
+      run:
+        set -euxo pipefail
+        cd todo
+        npm run build
+        echo "Build output (todo/build)"
+        test -f build/index.html
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./todo/build
