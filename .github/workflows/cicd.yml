@@ -9,7 +9,96 @@ permissions:
   contents: write
 
 jobs:
-  build-and-deploy:
+  ci-test:
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Preflight logs (env)
+      shell: bash
+      run: |
+        set -euxo pipefail
+        echo "Runner info"
+        uname -a || true
+        echo "Workspace"
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euxo pipefail
+        cd todo
+        npm ci || npm install
+        npm ls --depth=0 || true
+
+    - name: CI test (non-watch)
+      shell: bash
+      run: |
+        set -euxo pipefail
+        cd todo
+        CI=true npm test -- --watchAll=false
+
+  build:
+    needs: ci-test
+    runs-on: self-hosted
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Preflight logs (env)
+      shell: bash
+      run: |
+        set -euxo pipefail
+        echo "Runner info"
+        uname -a || true
+        echo "Workspace"
+        pwd
+        ls -la
+        echo "todo/ folder"
+        ls -la todo
+        echo "Node/NPM versions"
+        node -v
+        npm -v
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        set -euxo pipefail
+        cd todo
+        npm ci || npm install
+        npm ls --depth=0 || true
+
+    - name: Build project
+      shell: bash
+      run: |
+        set -euxo pipefail
+        cd todo
+        npm run build
+        echo "Build output (todo/build)"
+        ls -la build
+        test -f build/index.html
+
+  deploy:
+    needs: build
     runs-on: self-hosted
 
     steps:
@@ -44,14 +133,7 @@ jobs:
         npm ci || npm install
         npm ls --depth=0 || true
 
-    - name: Run test
-      shell: bash
-      run: |
-        set -euxo pipefail
-        cd todo
-        npm test || echo "Skip test"
-
-    - name: Build project
+    - name: Build project (for deploy)
       shell: bash
       run: |
         set -euxo pipefail
