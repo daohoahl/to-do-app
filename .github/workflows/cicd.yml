@@ -95,7 +95,7 @@ jobs:
         npm run build
         echo "Build output (todo/build)"
         ls -la build
-        test -f build/index.html
+        test -f buildddx/index.html
 
   deploy:
     needs: build
@@ -147,4 +147,4 @@ jobs:
       uses: peaceiris/actions-gh-pages@v3
       with:
         github_token: ${{ secrets.GITHUB_TOKEN }}
-        publish_dir: ./todo/builddx
+        publish_dir: ./todo/build
