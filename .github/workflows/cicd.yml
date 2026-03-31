@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-and-deploy:
     runs-on: self-hosted
 
     steps:
@@ -35,30 +35,6 @@ jobs:
       run: 
         cd todo
         npm run build
-
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-files
-        path: ./todo/build
-
-  deploy:
-    needs: build
-    runs-on: self-hosted 
-
-    steps:
-    - name: Deploy local on Mac
-      run: 
-        echo "Deploying to local machine..."
-        mkdir -p ~/deploy-todo
-        cp -r todo/build/* ~/deploy-todo
-        echo "Deploy done at ~/deploy-todo"
-
-    - name: Download artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: build-files
-        path: ./todo/build
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v3
