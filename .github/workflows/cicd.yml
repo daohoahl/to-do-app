@@ -47,6 +47,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Deploy local on Mac
+     run: 
+        echo "Deploying to local machine..."
+        mkdir -p ~/deploy-todo
+        cp -r todo/build/* ~/deploy-todo
+        echo "Deploy done at ~/deploy-todo"
+
     - name: Download artifact
       uses: actions/download-artifact@v4
       with:
