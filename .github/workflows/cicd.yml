@@ -91,20 +91,24 @@ jobs:
     name: Deploy (VM pull & run)
     needs: docker
     runs-on: self-hosted
+    env:
+      VM_DEPLOY_HOST: ${{ secrets.VM_DEPLOY_HOST }}
+      VM_DEPLOY_USER: ${{ secrets.VM_DEPLOY_USER }}
+      VM_DEPLOY_SSH_KEY: ${{ secrets.VM_DEPLOY_SSH_KEY }}
 
     steps:
       - name: Skip deploy (missing VM secrets)
-        if: ${{ secrets.VM_DEPLOY_HOST == '' || secrets.VM_DEPLOY_USER == '' || secrets.VM_DEPLOY_SSH_KEY == '' }}
+        if: ${{ env.VM_DEPLOY_HOST == '' || env.VM_DEPLOY_USER == '' || env.VM_DEPLOY_SSH_KEY == '' }}
         run: |
           echo "Skip deploy_vm: missing one of VM_DEPLOY_HOST / VM_DEPLOY_USER / VM_DEPLOY_SSH_KEY"
 
       - name: Deploy on VM over SSH
-        if: ${{ secrets.VM_DEPLOY_HOST != '' && secrets.VM_DEPLOY_USER != '' && secrets.VM_DEPLOY_SSH_KEY != '' }}
+        if: ${{ env.VM_DEPLOY_HOST != '' && env.VM_DEPLOY_USER != '' && env.VM_DEPLOY_SSH_KEY != '' }}
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.VM_DEPLOY_HOST }}
-          username: ${{ secrets.VM_DEPLOY_USER }}
-          key: ${{ secrets.VM_DEPLOY_SSH_KEY }}
+          host: ${{ env.VM_DEPLOY_HOST }}
+          username: ${{ env.VM_DEPLOY_USER }}
+          key: ${{ env.VM_DEPLOY_SSH_KEY }}
           script: |
             set -euxo pipefail
             docker pull ${{ env.IMAGE_NAME }}:latest
