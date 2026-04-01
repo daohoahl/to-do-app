@@ -126,13 +126,13 @@ jobs:
             docker pull ${{ env.IMAGE_NAME }}:latest
             docker stop to-do-app 2>/dev/null || true
             docker rm to-do-app 2>/dev/null || true
-            docker run -d --name to-do-app --restart unless-stopped -p 80:80 ${{ env.IMAGE_NAME }}:latest
+            docker run -d --name to-do-app --restart unless-stopped -p 8080:80 ${{ env.IMAGE_NAME }}:latest
 
             echo "== Verify container is running =="
             docker ps --filter "name=to-do-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
             echo "== Verify HTTP (localhost) =="
-            code="$(curl -s -o /dev/null -w "%{http_code}" http://localhost/ || true)"
+            code="$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || true)"
             echo "HTTP_STATUS=$code"
             if [ "$code" != "200" ]; then
               echo "Deploy check failed (expected 200)."
