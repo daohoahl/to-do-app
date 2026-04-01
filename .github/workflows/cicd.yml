@@ -130,11 +130,30 @@ jobs:
 
             echo "== Verify container is running =="
             docker ps --filter "name=to-do-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            docker inspect -f 'STATE={{.State.Status}} EXIT={{.State.ExitCode}} ERROR={{.State.Error}}' to-do-app || true
+
+            echo "== Verify port is listening on VM (8080) =="
+            (command -v ss >/dev/null && ss -ltnp | grep -E ':8080\\b' || true)
+
+            echo "== Wait for HTTP to become ready =="
+            code="000"
+            for i in $(seq 1 15); do
+              code="$(curl -sS -o /dev/null -m 3 -w "%{http_code}" http://localhost:8080/ || true)"
+              echo "try=$i HTTP_STATUS=$code"
+              if [ "$code" = "200" ]; then
+                break
+              fi
+              sleep 2
+            done
 
             echo "== Verify HTTP (localhost) =="
-            code="$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ || true)"
             echo "HTTP_STATUS=$code"
             if [ "$code" != "200" ]; then
+              echo "== Diagnostics (last 200 lines) =="
+              docker ps -a --filter "name=to-do-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+              docker logs --tail 200 to-do-app || true
+              echo "== Curl verbose =="
+              curl -v http://localhost:8080/ || true
               echo "Deploy check failed (expected 200)."
               exit 1
             fi
