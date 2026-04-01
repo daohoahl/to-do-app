@@ -97,13 +97,25 @@ jobs:
       VM_DEPLOY_SSH_KEY: ${{ secrets.VM_DEPLOY_SSH_KEY }}
 
     steps:
-      - name: Skip deploy (missing VM secrets)
-        if: ${{ env.VM_DEPLOY_HOST == '' || env.VM_DEPLOY_USER == '' || env.VM_DEPLOY_SSH_KEY == '' }}
+      - name: Validate deploy configuration (secrets)
+        shell: bash
         run: |
-          echo "Skip deploy_vm: missing one of VM_DEPLOY_HOST / VM_DEPLOY_USER / VM_DEPLOY_SSH_KEY"
+          set -euo pipefail
+          if [ -z "${VM_DEPLOY_HOST:-}" ] || [ -z "${VM_DEPLOY_USER:-}" ] || [ -z "${VM_DEPLOY_SSH_KEY:-}" ]; then
+            echo "Skip deploy_vm: missing one of VM_DEPLOY_HOST / VM_DEPLOY_USER / VM_DEPLOY_SSH_KEY"
+            exit 0
+          fi
+
+          # appleboy/ssh-action expects a PRIVATE key (not .pub) in OpenSSH/PEM format.
+          if ! printf '%s' "$VM_DEPLOY_SSH_KEY" | grep -qE 'BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY'; then
+            echo "VM_DEPLOY_SSH_KEY looks invalid (not a private key block)."
+            echo "Paste the full private key content starting with '-----BEGIN ... PRIVATE KEY-----' into the secret."
+            exit 1
+          fi
+
+          echo "Deploy target: ${VM_DEPLOY_USER}@${VM_DEPLOY_HOST}"
 
       - name: Deploy on VM over SSH
-        if: ${{ env.VM_DEPLOY_HOST != '' && env.VM_DEPLOY_USER != '' && env.VM_DEPLOY_SSH_KEY != '' }}
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ env.VM_DEPLOY_HOST }}
