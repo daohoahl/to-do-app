@@ -123,7 +123,30 @@ jobs:
           key: ${{ env.VM_DEPLOY_SSH_KEY }}
           script: |
             set -euxo pipefail
-            docker pull ${{ env.IMAGE_NAME }}:latest
+
+            echo "== Network/DNS preflight =="
+            (command -v resolvectl >/dev/null && resolvectl status || true)
+            (test -f /etc/resolv.conf && cat /etc/resolv.conf || true)
+            getent hosts registry-1.docker.io || true
+
+            echo "== Pull image with retry =="
+            pulled="0"
+            for i in $(seq 1 10); do
+              if docker pull ${{ env.IMAGE_NAME }}:latest; then
+                pulled="1"
+                break
+              fi
+              echo "docker pull failed (attempt $i/10). sleep 3s then retry..."
+              sleep 3
+            done
+            if [ "$pulled" != "1" ]; then
+              echo "== Pull failed: DNS diagnostics =="
+              (command -v resolvectl >/dev/null && resolvectl status || true)
+              getent hosts registry-1.docker.io || true
+              curl -I https://registry-1.docker.io/v2/ || true
+              exit 1
+            fi
+
             docker stop to-do-app 2>/dev/null || true
             docker rm to-do-app 2>/dev/null || true
             docker run -d --name to-do-app --restart unless-stopped -p 8080:80 ${{ env.IMAGE_NAME }}:latest
