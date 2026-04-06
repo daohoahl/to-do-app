@@ -1,4 +1,4 @@
-name: CI/CD (Test + Dockerize + Deploy VM)
+name: CI/CD (Test + Dockerize + Deploy EC2)
 
 on:
   push:
@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   NODE_VERSION: "18"
@@ -40,7 +41,7 @@ jobs:
         run: npm ci
 
       - name: Test
-        run: npm test -- --watchAll=false
+        run: npm test --watchAll=false
 
       - name: Build
         run: npm run build
@@ -69,7 +70,6 @@ jobs:
             type=raw,value=latest
             type=sha
             type=ref,event=branch
-            type=raw,value=run-${{ github.run_number }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -87,96 +87,103 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  deploy_vm:
-    name: Deploy (VM pull & run)
+  deploy_ec2:
+    name: Deploy (EC2 via SSM RunCommand)
     needs: docker
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
-      VM_DEPLOY_HOST: ${{ secrets.VM_DEPLOY_HOST }}
-      VM_DEPLOY_USER: ${{ secrets.VM_DEPLOY_USER }}
-      VM_DEPLOY_SSH_KEY: ${{ secrets.VM_DEPLOY_SSH_KEY }}
-
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
+      EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+      APP_PORT: "8080"
     steps:
-      - name: Validate deploy configuration (secrets)
+      - name: Validate AWS + SSM config
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${VM_DEPLOY_HOST:-}" ] || [ -z "${VM_DEPLOY_USER:-}" ] || [ -z "${VM_DEPLOY_SSH_KEY:-}" ]; then
-            echo "Skip deploy_vm: missing one of VM_DEPLOY_HOST / VM_DEPLOY_USER / VM_DEPLOY_SSH_KEY"
+
+          if [ -z "${AWS_REGION:-}" ] || [ -z "${AWS_ROLE_TO_ASSUME:-}" ]; then
+            echo "Skip deploy_ec2: missing AWS_REGION / AWS_ROLE_TO_ASSUME (use GitHub Variables)."
             exit 0
           fi
 
-          # appleboy/ssh-action expects a PRIVATE key (not .pub) in OpenSSH/PEM format.
-          if ! printf '%s' "$VM_DEPLOY_SSH_KEY" | grep -qE 'BEGIN (OPENSSH|RSA|EC|DSA) PRIVATE KEY'; then
-            echo "VM_DEPLOY_SSH_KEY looks invalid (not a private key block)."
-            echo "Paste the full private key content starting with '-----BEGIN ... PRIVATE KEY-----' into the secret."
-            exit 1
-          fi
+          # Default to your provided instance id if the variable is not set.
+          echo "INSTANCE_ID=${EC2_INSTANCE_ID:-i-07a5883d82c5cfed8}" >> "$GITHUB_ENV"
 
-          echo "Deploy target: ${VM_DEPLOY_USER}@${VM_DEPLOY_HOST}"
-
-      - name: Deploy on VM over SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ env.VM_DEPLOY_HOST }}
-          username: ${{ env.VM_DEPLOY_USER }}
-          key: ${{ env.VM_DEPLOY_SSH_KEY }}
-          script: |
-            set -euxo pipefail
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
 
-            echo "== Network/DNS preflight =="
-            (command -v resolvectl >/dev/null && resolvectl status || true)
-            (test -f /etc/resolv.conf && cat /etc/resolv.conf || true)
-            getent hosts registry-1.docker.io || true
+      - name: Deploy on EC2 (SSM RunCommand)
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            echo "== Pull image with retry =="
-            pulled="0"
-            for i in $(seq 1 10); do
-              if docker pull ${{ env.IMAGE_NAME }}:latest; then
-                pulled="1"
-                break
-              fi
-              echo "docker pull failed (attempt $i/10). sleep 3s then retry..."
-              sleep 3
-            done
-            if [ "$pulled" != "1" ]; then
-              echo "== Pull failed: DNS diagnostics =="
-              (command -v resolvectl >/dev/null && resolvectl status || true)
-              getent hosts registry-1.docker.io || true
-              curl -I https://registry-1.docker.io/v2/ || true
-              exit 1
-            fi
+          echo "Deploy target instance: ${INSTANCE_ID}"
 
-            docker stop to-do-app 2>/dev/null || true
-            docker rm to-do-app 2>/dev/null || true
-            docker run -d --name to-do-app --restart unless-stopped -p 8080:80 ${{ env.IMAGE_NAME }}:latest
+          cmd_id="$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy to-do-app container" \
+            --instance-ids "${INSTANCE_ID}" \
+            --parameters commands="set -euxo pipefail
+          docker pull '${IMAGE_NAME}:latest'
+          docker stop to-do-app 2>/dev/null || true
+          docker rm to-do-app 2>/dev/null || true
+          docker run -d --name to-do-app --restart unless-stopped -p ${APP_PORT}:80 '${IMAGE_NAME}:latest'
+          code='000'
+          for i in \$(seq 1 15); do
+            code=\$(curl -sS -o /dev/null -m 3 -w '%{http_code}' http://localhost:${APP_PORT}/ || true)
+            echo \"try=\$i HTTP_STATUS=\$code\"
+            if [ \"\$code\" = \"200\" ]; then break; fi
+            sleep 2
+          done
+          test \"\$code\" = \"200\"" \
+            --query "Command.CommandId" \
+            --output text)"
 
-            echo "== Verify container is running =="
-            docker ps --filter "name=to-do-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-            docker inspect -f 'STATE={{.State.Status}} EXIT={{.State.ExitCode}} ERROR={{.State.Error}}' to-do-app || true
+          echo "SSM_COMMAND_ID=$cmd_id" >> "$GITHUB_ENV"
+          echo "SSM CommandId=$cmd_id"
 
-            echo "== Verify port is listening on VM (8080) =="
-            (command -v ss >/dev/null && ss -ltnp | grep -E ':8080\\b' || true)
+      - name: Wait for SSM command result
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            echo "== Wait for HTTP to become ready =="
-            code="000"
-            for i in $(seq 1 15); do
-              code="$(curl -sS -o /dev/null -m 3 -w "%{http_code}" http://localhost:8080/ || true)"
-              echo "try=$i HTTP_STATUS=$code"
-              if [ "$code" = "200" ]; then
-                break
-              fi
-              sleep 2
-            done
+          cmd_id="${SSM_COMMAND_ID:?missing}"
+          inst="${INSTANCE_ID:?missing}"
 
-            echo "== Verify HTTP (localhost) =="
-            echo "HTTP_STATUS=$code"
-            if [ "$code" != "200" ]; then
-              echo "== Diagnostics (last 200 lines) =="
-              docker ps -a --filter "name=to-do-app" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-              docker logs --tail 200 to-do-app || true
-              echo "== Curl verbose =="
-              curl -v http://localhost:8080/ || true
-              echo "Deploy check failed (expected 200)."
-              exit 1
-            fi
+          status="Pending"
+          for i in $(seq 1 60); do
+            status="$(aws ssm get-command-invocation \
+              --command-id "$cmd_id" \
+              --instance-id "$inst" \
+              --query "Status" \
+              --output text || true)"
+
+            echo "poll=$i status=$status"
+
+            case "$status" in
+              Success)
+                exit 0
+                ;;
+              Failed|Cancelled|TimedOut)
+                echo "== SSM command output (stdout) =="
+                aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$inst" --query "StandardOutputContent" --output text || true
+                echo "== SSM command output (stderr) =="
+                aws ssm get-command-invocation --command-id "$cmd_id" --instance-id "$inst" --query "StandardErrorContent" --output text || true
+                exit 1
+                ;;
+              Pending|InProgress|Delayed)
+                sleep 5
+                ;;
+              *)
+                sleep 5
+                ;;
+            esac
+          done
+
+          echo "Timeout waiting for SSM command to complete."
+          exit 1
