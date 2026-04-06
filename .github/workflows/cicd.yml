@@ -130,10 +130,83 @@ jobs:
           cmds = [
             # SSM's AWS-RunShellScript uses /bin/sh by default; avoid bash-only options like 'pipefail'.
             "set -eux",
+            # Shared docker network for app + monitoring
+            "docker network create todo-net 2>/dev/null || true",
+
+            # App
             f"docker pull {image}:{tag}",
             "docker stop to-do-app 2>/dev/null || true",
             "docker rm to-do-app 2>/dev/null || true",
-            f"docker run -d --name to-do-app --restart unless-stopped -p {port}:80 {image}:{tag}",
+            f"docker run -d --name to-do-app --restart unless-stopped --network todo-net -p {port}:80 {image}:{tag}",
+
+            # Monitoring (basic, same EC2)
+            # node_exporter: host metrics
+            "docker pull prom/node-exporter:v1.9.1",
+            "docker stop node-exporter 2>/dev/null || true",
+            "docker rm node-exporter 2>/dev/null || true",
+            (
+              "docker run -d --name node-exporter --restart unless-stopped --network todo-net "
+              "--pid=host -p 9100:9100 "
+              "-v /proc:/host/proc:ro -v /sys:/host/sys:ro -v /:/rootfs:ro "
+              "prom/node-exporter:v1.9.1 "
+              "--path.procfs=/host/proc --path.sysfs=/host/sys --path.rootfs=/rootfs"
+            ),
+
+            # cAdvisor: container metrics
+            "docker pull gcr.io/cadvisor/cadvisor:v0.49.1",
+            "docker stop cadvisor 2>/dev/null || true",
+            "docker rm cadvisor 2>/dev/null || true",
+            (
+              "docker run -d --name cadvisor --restart unless-stopped --network todo-net "
+              "-p 8089:8080 "
+              "--privileged "
+              "-v /:/rootfs:ro -v /var/run:/var/run:rw -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro "
+              "gcr.io/cadvisor/cadvisor:v0.49.1"
+            ),
+
+            # Prometheus config
+            "mkdir -p /opt/todo-monitoring/prometheus",
+            "cat > /opt/todo-monitoring/prometheus/prometheus.yml <<'EOF'\n"
+            "global:\n"
+            "  scrape_interval: 10s\n"
+            "\n"
+            "scrape_configs:\n"
+            "  - job_name: prometheus\n"
+            "    static_configs:\n"
+            "      - targets: ['localhost:9090']\n"
+            "\n"
+            "  - job_name: node_exporter\n"
+            "    static_configs:\n"
+            "      - targets: ['node-exporter:9100']\n"
+            "\n"
+            "  - job_name: cadvisor\n"
+            "    static_configs:\n"
+            "      - targets: ['cadvisor:8080']\n"
+            "EOF",
+
+            "docker pull prom/prometheus:v3.5.0",
+            "docker stop prometheus 2>/dev/null || true",
+            "docker rm prometheus 2>/dev/null || true",
+            (
+              "docker run -d --name prometheus --restart unless-stopped --network todo-net "
+              "-p 9090:9090 "
+              "-v /opt/todo-monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro "
+              "prom/prometheus:v3.5.0 --config.file=/etc/prometheus/prometheus.yml"
+            ),
+
+            # Grafana (basic, no provisioning)
+            "docker pull grafana/grafana:11.6.0",
+            "docker stop grafana 2>/dev/null || true",
+            "docker rm grafana 2>/dev/null || true",
+            (
+              "docker run -d --name grafana --restart unless-stopped --network todo-net "
+              "-p 3000:3000 "
+              "-e GF_SECURITY_ADMIN_USER=admin "
+              "-e GF_SECURITY_ADMIN_PASSWORD=admin "
+              "-e GF_USERS_ALLOW_SIGN_UP=false "
+              "grafana/grafana:11.6.0"
+            ),
+
             "code='000'",
             f"for i in $(seq 1 15); do code=$(curl -sS -o /dev/null -m 3 -w '%{{http_code}}' http://localhost:{port}/ || true); echo \"try=$i HTTP_STATUS=$code\"; if [ \"$code\" = \"200\" ]; then break; fi; sleep 2; done",
             "test \"$code\" = \"200\"",

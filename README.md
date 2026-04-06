@@ -50,6 +50,17 @@ Notes:
 - You still need Docker Hub credentials as GitHub **Secrets** if your image is private (`DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`).
 - Your EC2 must have Docker installed and allow inbound `8080/tcp` (or adjust `APP_PORT` in `.github/workflows/cicd.yml`).
 
+## Monitoring on the same EC2 (basic)
+
+When `deploy_ec2` runs, it also starts a minimal monitoring stack on the **same EC2**:
+
+- **Prometheus**: `http://<EC2_PUBLIC_IP>:9090`
+- **Grafana**: `http://<EC2_PUBLIC_IP>:3000` (user/pass: `admin` / `admin`)
+- **node_exporter**: `http://<EC2_PUBLIC_IP>:9100` (metrics)
+- **cAdvisor**: `http://<EC2_PUBLIC_IP>:8089` (metrics/UI)
+
+Security Group: open inbound TCP for `3000`, `9090`, `9100`, `8089` (or restrict to your IP).
+
 ## Stop
 
 ```bash
