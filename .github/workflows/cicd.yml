@@ -49,7 +49,7 @@ jobs:
   docker:
     name: Docker (build & push)
     needs: ci
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
