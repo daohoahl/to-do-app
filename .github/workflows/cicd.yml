@@ -128,7 +128,8 @@ jobs:
           tag = os.environ["IMAGE_TAG"]
           port = os.environ.get("APP_PORT", "8080")
           cmds = [
-            "set -euxo pipefail",
+            # SSM's AWS-RunShellScript uses /bin/sh by default; avoid bash-only options like 'pipefail'.
+            "set -eux",
             f"docker pull {image}:{tag}",
             "docker stop to-do-app 2>/dev/null || true",
             "docker rm to-do-app 2>/dev/null || true",
