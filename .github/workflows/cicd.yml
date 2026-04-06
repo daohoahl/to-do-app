@@ -43,13 +43,12 @@ jobs:
       - name: Test
         run: npm test --watchAll=false
 
-      - name: Build
-        run: npm run build
-
   docker:
     name: Docker (build & push)
     needs: ci
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.tag.outputs.image_tag }}
 
     steps:
       - name: Checkout
@@ -61,31 +60,28 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest
-            type=sha
-            type=ref,event=branch
+      - name: Compute image tag (commit SHA)
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU (multi-arch)
-        uses: docker/setup-qemu-action@v3
 
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: ./todo
           file: ./todo/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.image_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy_ec2:
     name: Deploy (EC2 via SSM RunCommand)
@@ -123,24 +119,33 @@ jobs:
           set -euo pipefail
 
           echo "Deploy target instance: ${INSTANCE_ID}"
+          image_tag="${{ needs.docker.outputs.image_tag }}"
+          export IMAGE_TAG="$image_tag"
+
+          params="$(python - <<'PY'
+          import json, os
+          image = os.environ["IMAGE_NAME"]
+          tag = os.environ["IMAGE_TAG"]
+          port = os.environ.get("APP_PORT", "8080")
+          cmds = [
+            "set -euxo pipefail",
+            f"docker pull {image}:{tag}",
+            "docker stop to-do-app 2>/dev/null || true",
+            "docker rm to-do-app 2>/dev/null || true",
+            f"docker run -d --name to-do-app --restart unless-stopped -p {port}:80 {image}:{tag}",
+            "code='000'",
+            f"for i in $(seq 1 15); do code=$(curl -sS -o /dev/null -m 3 -w '%{{http_code}}' http://localhost:{port}/ || true); echo \"try=$i HTTP_STATUS=$code\"; if [ \"$code\" = \"200\" ]; then break; fi; sleep 2; done",
+            "test \"$code\" = \"200\"",
+          ]
+          print(json.dumps({"commands": cmds}))
+          PY
+          )"
 
           cmd_id="$(aws ssm send-command \
             --document-name "AWS-RunShellScript" \
             --comment "Deploy to-do-app container" \
             --instance-ids "${INSTANCE_ID}" \
-            --parameters commands="set -euxo pipefail
-          docker pull '${IMAGE_NAME}:latest'
-          docker stop to-do-app 2>/dev/null || true
-          docker rm to-do-app 2>/dev/null || true
-          docker run -d --name to-do-app --restart unless-stopped -p ${APP_PORT}:80 '${IMAGE_NAME}:latest'
-          code='000'
-          for i in \$(seq 1 15); do
-            code=\$(curl -sS -o /dev/null -m 3 -w '%{http_code}' http://localhost:${APP_PORT}/ || true)
-            echo \"try=\$i HTTP_STATUS=\$code\"
-            if [ \"\$code\" = \"200\" ]; then break; fi
-            sleep 2
-          done
-          test \"\$code\" = \"200\"" \
+            --parameters "$params" \
             --query "Command.CommandId" \
             --output text)"
 
