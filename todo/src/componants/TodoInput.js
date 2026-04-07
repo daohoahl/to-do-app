@@ -4,6 +4,7 @@ import { useState } from "react";
 //import TextField from "@mui/material/TextField";
 import { PlusIcon } from "@heroicons/react/outline";
 import "./TodoInput.css";
+import { sendTelemetry } from "../telemetry";
 
 function TodoInput({ todos, setTodos }) {
   const [todo, setTodo] = useState("");
@@ -18,6 +19,11 @@ function TodoInput({ todos, setTodos }) {
     };
     const newTodos = [...todos, newTodo];
     setTodos(newTodos);
+    sendTelemetry({
+      type: "todo_add",
+      value: todo,
+      todoId: newTodo.id,
+    });
     setTodo("");
   }
   return (

@@ -2,13 +2,20 @@ import { useState } from "react";
 import TodoInput from "./TodoInput";
 import TodoItem from "./TodoItem";
 import "./TodoList.css";
+import { sendTelemetry } from "../telemetry";
 
 function TodoList() {
   const [todos, setTodos] = useState([]);
 
   const handleDelete = (id) => {
+    const deleted = todos.find((t) => t.id === id);
     const filteredTodos = todos.filter((todo) => todo.id !== id);
     setTodos(filteredTodos);
+    sendTelemetry({
+      type: "todo_delete",
+      todoId: id,
+      value: deleted?.name ?? "",
+    });
   };
 
   return (

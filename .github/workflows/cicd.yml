@@ -130,6 +130,7 @@ jobs:
           stable_tag = os.environ.get("STABLE_TAG", "stable")
           lb_port = os.environ.get("APP_PORT", "8080")
           app2_port = os.environ.get("APP2_PORT", "8081")
+          telemetry_port = os.environ.get("TELEMETRY_PORT", "7070")
           cmds = [
             # SSM's AWS-RunShellScript uses /bin/sh by default; avoid bash-only options like 'pipefail'.
             "set -eux",
@@ -153,6 +154,108 @@ jobs:
             "docker rm app2 2>/dev/null || true",
             f"docker run -d --name app2 --restart unless-stopped --network todo-net -p {app2_port}:80 {image}:{tag}",
 
+            # Telemetry service: collect raw web interactions and expose /stats.json (JSON)
+            "mkdir -p /opt/todo-telemetry",
+            "cat > /opt/todo-telemetry/server.mjs <<'EOF'\n"
+            "import http from 'http';\n"
+            "import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';\n"
+            "import { dirname } from 'path';\n"
+            "\n"
+            "const PORT = Number(process.env.PORT || 7070);\n"
+            "const DATA_FILE = process.env.DATA_FILE || '/data/events.jsonl';\n"
+            "const MAX_EVENTS = Number(process.env.MAX_EVENTS || 200);\n"
+            "\n"
+            "function ensureDir(p) {\n"
+            "  const d = dirname(p);\n"
+            "  if (!existsSync(d)) mkdirSync(d, { recursive: true });\n"
+            "}\n"
+            "\n"
+            "ensureDir(DATA_FILE);\n"
+            "\n"
+            "let events = [];\n"
+            "let countsByType = {};\n"
+            "let total = 0;\n"
+            "\n"
+            "function record(ev) {\n"
+            "  total += 1;\n"
+            "  const type = String(ev.type || 'unknown');\n"
+            "  countsByType[type] = (countsByType[type] || 0) + 1;\n"
+            "  events.push(ev);\n"
+            "  if (events.length > MAX_EVENTS) events = events.slice(-MAX_EVENTS);\n"
+            "}\n"
+            "\n"
+            "try {\n"
+            "  if (existsSync(DATA_FILE)) {\n"
+            "    const lines = readFileSync(DATA_FILE, 'utf8').trim().split('\\n').filter(Boolean);\n"
+            "    for (const line of lines.slice(-MAX_EVENTS)) {\n"
+            "      try { record(JSON.parse(line)); } catch {}\n"
+            "    }\n"
+            "  }\n"
+            "} catch {}\n"
+            "\n"
+            "function sendJson(res, code, obj) {\n"
+            "  const body = JSON.stringify(obj, null, 2);\n"
+            "  res.writeHead(code, {\n"
+            "    'Content-Type': 'application/json; charset=utf-8',\n"
+            "    'Cache-Control': 'no-store'\n"
+            "  });\n"
+            "  res.end(body);\n"
+            "}\n"
+            "\n"
+            "const server = http.createServer((req, res) => {\n"
+            "  const url = new URL(req.url || '/', 'http://localhost');\n"
+            "\n"
+            "  if (req.method === 'GET' && url.pathname === '/stats.json') {\n"
+            "    return sendJson(res, 200, {\n"
+            "      ok: true,\n"
+            "      now: Date.now(),\n"
+            "      totalEvents: total,\n"
+            "      countsByType,\n"
+            "      lastEvents: events.slice(-50)\n"
+            "    });\n"
+            "  }\n"
+            "\n"
+            "  if (req.method === 'POST' && url.pathname === '/telemetry/event') {\n"
+            "    let raw = '';\n"
+            "    req.on('data', (c) => {\n"
+            "      raw += c;\n"
+            "      if (raw.length > 1024 * 64) req.destroy();\n"
+            "    });\n"
+            "    req.on('end', () => {\n"
+            "      try {\n"
+            "        const ev = JSON.parse(raw || '{}');\n"
+            "        const safe = {\n"
+            "          ts: Number(ev.ts || Date.now()),\n"
+            "          type: String(ev.type || 'unknown'),\n"
+            "          value: String(ev.value || ''),\n"
+            "          todoId: ev.todoId ?? null,\n"
+            "          path: String(ev.path || ''),\n"
+            "          ua: String(ev.ua || ''),\n"
+            "          ip: String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')\n"
+            "        };\n"
+            "        appendFileSync(DATA_FILE, JSON.stringify(safe) + '\\n');\n"
+            "        record(safe);\n"
+            "        return sendJson(res, 200, { ok: true });\n"
+            "      } catch {\n"
+            "        return sendJson(res, 400, { ok: false });\n"
+            "      }\n"
+            "    });\n"
+            "    return;\n"
+            "  }\n"
+            "\n"
+            "  res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });\n"
+            "  res.end('not found');\n"
+            "});\n"
+            "\n"
+            "server.listen(PORT, '0.0.0.0', () => {\n"
+            "  console.log(`telemetry listening on :${PORT}`);\n"
+            "});\n"
+            "EOF",
+            "docker pull node:18-alpine",
+            "docker stop todo-telemetry 2>/dev/null || true",
+            "docker rm todo-telemetry 2>/dev/null || true",
+            f"docker run -d --name todo-telemetry --restart unless-stopped --network todo-net -e PORT={telemetry_port} -e DATA_FILE=/data/events.jsonl -v /opt/todo-telemetry:/data node:18-alpine node /data/server.mjs",
+
             # Nginx load balancer 
             "mkdir -p /opt/todo-lb",
             "cat > /opt/todo-lb/lb.conf <<'EOF'\n"
@@ -161,6 +264,11 @@ jobs:
             "  server app1:80 max_fails=3 fail_timeout=10s;\n"
             "  server app2:80 max_fails=3 fail_timeout=10s;\n"
             "  keepalive 32;\n"
+            "}\n"
+            "\n"
+            "upstream telemetry_upstream {\n"
+            "  server todo-telemetry:7070;\n"
+            "  keepalive 8;\n"
             "}\n"
             "\n"
             "map $http_x_canary $use_canary {\n"
@@ -191,6 +299,14 @@ jobs:
             "\n"
             "    proxy_next_upstream error timeout http_502 http_503 http_504;\n"
             "    proxy_pass http://$backend;\n"
+            "  }\n"
+            "\n"
+            "  location = /stats.json {\n"
+            "    proxy_pass http://telemetry_upstream/stats.json;\n"
+            "  }\n"
+            "\n"
+            "  location = /telemetry/event {\n"
+            "    proxy_pass http://telemetry_upstream/telemetry/event;\n"
             "  }\n"
             "}\n"
             "EOF",
@@ -225,7 +341,7 @@ jobs:
               "gcr.io/cadvisor/cadvisor:v0.49.1"
             ),
 
-            # Prometheus config
+            # Prometheus 
             "mkdir -p /opt/todo-monitoring/prometheus",
             "cat > /opt/todo-monitoring/prometheus/prometheus.yml <<'EOF'\n"
             "global:\n"
@@ -255,7 +371,7 @@ jobs:
               "prom/prometheus:v3.5.0 --config.file=/etc/prometheus/prometheus.yml"
             ),
 
-            # Grafana (basic, no provisioning)
+            # Grafana 
             "docker pull grafana/grafana:11.6.0",
             "docker stop grafana 2>/dev/null || true",
             "docker rm grafana 2>/dev/null || true",
