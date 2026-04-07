@@ -93,6 +93,8 @@ jobs:
       EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
       APP_PORT: "8080"
       APP2_PORT: "8081"
+      # Set to "1" to force a healthcheck failure (for testing rollback).
+      FORCE_HEALTHCHECK_FAIL: ${{ vars.FORCE_HEALTHCHECK_FAIL }}
     steps:
       - name: Validate AWS + SSM config
         shell: bash
@@ -131,6 +133,7 @@ jobs:
           lb_port = os.environ.get("APP_PORT", "8080")
           app2_port = os.environ.get("APP2_PORT", "8081")
           telemetry_port = os.environ.get("TELEMETRY_PORT", "7070")
+          force_fail = os.environ.get("FORCE_HEALTHCHECK_FAIL", "0")
           cmds = [
             # SSM's AWS-RunShellScript uses /bin/sh by default; avoid bash-only options like 'pipefail'.
             "set -eux",
@@ -363,6 +366,8 @@ jobs:
 
             "code='000'",
             f"for i in $(seq 1 15); do code=$(curl -sS -o /dev/null -m 3 -w '%{{http_code}}' http://localhost:{lb_port}/ || true); echo \"try=$i HTTP_STATUS=$code\"; if [ \"$code\" = \"200\" ]; then break; fi; sleep 2; done",
+            # Optional: force the healthcheck to fail to validate rollback behavior.
+            f"if [ \"{force_fail}\" = \"1\" ]; then echo 'FORCE_HEALTHCHECK_FAIL=1 -> failing healthcheck on purpose'; code='500'; fi",
             # If healthcheck fails, roll back containers to the last known good image tag (stable).
             "if [ \"$code\" != \"200\" ]; then "
             "  echo 'Healthcheck failed, rolling back to stable image'; "
