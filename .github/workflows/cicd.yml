@@ -84,16 +84,14 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy_ec2:
-    name: Deploy (EC2 via SSM RunCommand)
+    name: Deploy (EC2)
     needs: docker
     runs-on: ubuntu-latest
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_ROLE_TO_ASSUME: ${{ vars.AWS_ROLE_TO_ASSUME }}
       EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-      # Public port for Nginx load balancer on the EC2 host
       APP_PORT: "8080"
-      # Optional direct access to app2 on the EC2 host (bypasses Nginx)
       APP2_PORT: "8081"
     steps:
       - name: Validate AWS + SSM config
@@ -129,6 +127,7 @@ jobs:
           import json, os
           image = os.environ["IMAGE_NAME"]
           tag = os.environ["IMAGE_TAG"]
+          stable_tag = os.environ.get("STABLE_TAG", "stable")
           lb_port = os.environ.get("APP_PORT", "8080")
           app2_port = os.environ.get("APP2_PORT", "8081")
           cmds = [
@@ -137,10 +136,11 @@ jobs:
             # Shared docker network for app + monitoring
             "docker network create todo-net 2>/dev/null || true",
 
-            # App images
+            # App images (current and stable backup)
             f"docker pull {image}:{tag}",
+            f"docker pull {image}:{stable_tag} || true",
 
-            # Cleanup legacy single-container deployment (if it exists)
+            # Cleanup container deployment (if it exists)
             "docker stop to-do-app 2>/dev/null || true",
             "docker rm to-do-app 2>/dev/null || true",
 
@@ -153,7 +153,7 @@ jobs:
             "docker rm app2 2>/dev/null || true",
             f"docker run -d --name app2 --restart unless-stopped --network todo-net -p {app2_port}:80 {image}:{tag}",
 
-            # Nginx load balancer (ports are published from the EC2 host)
+            # Nginx load balancer 
             "mkdir -p /opt/todo-lb",
             "cat > /opt/todo-lb/lb.conf <<'EOF'\n"
             "upstream todo_upstream {\n"
@@ -270,7 +270,17 @@ jobs:
 
             "code='000'",
             f"for i in $(seq 1 15); do code=$(curl -sS -o /dev/null -m 3 -w '%{{http_code}}' http://localhost:{lb_port}/ || true); echo \"try=$i HTTP_STATUS=$code\"; if [ \"$code\" = \"200\" ]; then break; fi; sleep 2; done",
-            "test \"$code\" = \"200\"",
+            # If healthcheck fails, roll back containers to the last known good image tag (stable).
+            "if [ \"$code\" != \"200\" ]; then "
+            "  echo 'Healthcheck failed, rolling back to stable image'; "
+            f"  docker pull {image}:{stable_tag} || true; "
+            "  docker stop app1 app2 todo-lb 2>/dev/null || true; "
+            "  docker rm app1 app2 todo-lb 2>/dev/null || true; "
+            f"  docker run -d --name app1 --restart unless-stopped --network todo-net {image}:{stable_tag}; "
+            f"  docker run -d --name app2 --restart unless-stopped --network todo-net -p {app2_port}:80 {image}:{stable_tag}; "
+            f"  docker run -d --name todo-lb --restart unless-stopped --network todo-net -p {lb_port}:80 -v /opt/todo-lb/lb.conf:/etc/nginx/conf.d/default.conf:ro nginx:alpine; "
+            "  exit 1; "
+            "fi",
           ]
           print(json.dumps({"commands": cmds}))
           PY
@@ -327,3 +337,21 @@ jobs:
 
           echo "Timeout waiting for SSM command to complete."
           exit 1
+
+      - name: Login to Docker Hub for stable tag
+        if: ${{ success() }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Promote image to stable on success
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="${IMAGE_NAME}"
+          tag="${{ needs.docker.outputs.image_tag }}"
+          docker pull "$image:$tag"
+          docker tag "$image:$tag" "$image:stable"
+          docker push "$image:stable"
